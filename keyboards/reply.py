@@ -1,55 +1,31 @@
 from operator import truediv
 
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.utils.keyboard import ReplyKeyboardBuilder
 from telebot.types import ReplyKeyboardRemove
 
-start_bro = ReplyKeyboardBuilder()
-start_bro.add(
-    KeyboardButton(text="Забронировать")
-)
+from aiogram.types import KeyboardButton
+from aiogram.utils.keyboard import ReplyKeyboardBuilder
 
 
-start_kb = ReplyKeyboardBuilder()
-start_kb.attach(start_bro)
-start_kb.row(KeyboardButton(text="О нас"))
+def get_keyboard(
+        *btns: str,
+        placeholder: str = None,
+        request_contact: int = None,
+        request_location: int = None,
+        sizes: tuple[int] = (2,),
+):
+    keyboard = ReplyKeyboardBuilder()
 
-back_bt = ReplyKeyboardBuilder()
-back_bt.add(KeyboardButton(text='Назад'))
+    for index, text in enumerate(btns, start=0):
 
+        if request_contact and request_contact == index:
+            keyboard.add(KeyboardButton(text=text, request_contact=True))
 
+        elif request_location and request_location == index:
+            keyboard.add(KeyboardButton(text=text, request_location=True))
+        else:
+            keyboard.add(KeyboardButton(text=text))
 
-bron_kb = ReplyKeyboardBuilder()
-bron_kb.row(KeyboardButton(text='Приватный зал'))
-bron_kb.row(KeyboardButton(text='Столик(общий зал)'))
-bron_kb.row(KeyboardButton(text='Консоль'))
-bron_kb.row(KeyboardButton(text='ПК'))
-
-
-console_kb = ReplyKeyboardBuilder()
-console_kb.row(
-    KeyboardButton(text='PlayStation 4'),
-    KeyboardButton(text='PlayStation 5'),
-)
-console_kb.row(
-    KeyboardButton(text='PlayStation 4 с VR-шлемом')
-)
-console_kb.attach(back_bt)
-
-privat_kb = ReplyKeyboardBuilder()
-privat_kb.row(
-    KeyboardButton(text='До 10'),
-    KeyboardButton(text='10-13'),
-)
-privat_kb.row(
-    KeyboardButton(text='13-16'),
-    KeyboardButton(text='16-20'),
-)
-privat_kb.attach(back_bt)
-
-
-oukey_kb = ReplyKeyboardBuilder()
-oukey_kb.add(KeyboardButton(text='Мне подходит'))
-oukey_kb.attach(back_bt)
-
-
+    return keyboard.adjust(*sizes).as_markup(
+        resize_keyboard=True, input_field_placeholder=placeholder)

@@ -1,39 +1,50 @@
+
 from aiogram import types, Router
 from aiogram.filters import CommandStart, StateFilter
 from aiogram import F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import InputFile, FSInputFile, Message, TelegramObject
-from sqlalchemy.ext.asyncio import AsyncSession, session
-
+from aiogram.types import InputFile, FSInputFile, Message, TelegramObject, KeyboardButton, ReplyKeyboardRemove
+from sqlalchemy.ext.asyncio import AsyncSession, session  
 from database.models import Bron
 from database.orm_querry import orm_bron, orm_bron
-from keyboards import reply
+from database.requests import add_user
+from handlers.functions import SupportRequest
 from keyboards.inline import get_callback_btns
+from keyboards.reply import get_keyboard
+from config import SUPPORT_CHAT_ID, dp
+from meddleware.validatenumber import is_valid_working_time, string_to_int, validate_date, validate_phone_number, format_time
+from datetime import datetime, time, date, timedelta
+
+from states.SupportState import SupportState
+from states.bron_choice import bron_choice
 
 
 user_router = Router()
 
-class bron_choice(StatesGroup):
-    place = State()
-    name = State()
-    date = State()
-    time = State()
-    phone_number = State()
 
-
-
-
-#кнопка старт
 @user_router.message(CommandStart())
-async def start(message: types.Message):
+async def start(message: types.Message, session: AsyncSession):  # Добавляем параметр session
     with open('hello.txt', 'r', encoding='utf-8') as file:
         hello = file.read()
-    await message.answer(text=hello,
-                         reply_markup=get_callback_btns(
-                             btns={"Тарифы": f'abtus',
-                                   "Забронировать": f'bronstart'},
-                         ))
+
+    await message.answer(
+        text=hello,
+        reply_markup=get_callback_btns(
+            btns={
+                "Тарифы": "abtus",
+                "Забронировать": "bronstart",
+                "Связаться с оператором": "support"
+            }
+        )
+    )
+
+    await add_user(
+        session=session,  # Передаем сессию явно
+        tg_id=message.from_user.id,  # Убираем str(), если tg_id в БД число
+        username=message.from_user.username,
+        name=message.from_user.first_name
+    )
 
 #кнопка о нас, при нажатии выдает информацию из about_us.txt
 @user_router.callback_query(F.data == 'abtus')
@@ -44,6 +55,36 @@ async def abt(callback: types.CallbackQuery):
                                   reply_markup=get_callback_btns(
                                       btns={"Забронировать": f'bronstart'}
                                   ))
+
+
+@user_router.callback_query(F.data == 'support')
+async def send_request(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    support_request = SupportRequest(
+        user_id=callback.from_user.id,
+        username=callback.from_user.username,
+        message_id=callback.message.message_id,  # Правильное получение ID сообщения
+    )
+
+    await support_request.send_support_request()
+    await callback.message.reply(text="Ваше сообщение отправлено. Ожидайте ответа.")
+    await state.clear()
+
+
+
+
+@user_router.message(
+    SupportState.in_support,
+    F.content_type.in_({'any'})
+)
+async def support_reply(message: types.Message, state: FSMContext):
+    state_data = await state.get_data()
+    message_thread_id = state_data.get("message_thread_id")
+    await dp.bot.forward_message(
+        from_chat_id=message.chat.id,
+        message_thread_id=message_thread_id,
+        chat_id=SUPPORT_CHAT_ID,
+        message_id=message.message_id,
+    )
 
 #кнопка забронировать
 @user_router.callback_query(F.data == 'bronstart')
@@ -58,18 +99,6 @@ async def bron(callback: types.CallbackQuery, state: FSMContext):
 
     await state.set_state(bron_choice.place)
 
-#кнопка назад
-@user_router.callback_query(F.data == 'abt')
-async def back(callback: types.CallbackQuery, state:FSMContext):
-    currentstate = await state.get_state()
-    if currentstate == bron_choice.choice:
-        await callback.message.answer('Предыдущего шага не было.')
-    previous = None
-    for step in bron_choice.__all_states__:
-        if step.state == currentstate:
-            await state.set_state(previous)
-            return
-
 
 #выбор консоли
 @user_router.callback_query(F.data == 'console')
@@ -83,15 +112,151 @@ async def cons(callback: types.CallbackQuery, state: FSMContext):
                          ))
     await state.set_state(bron_choice.place)
 
+#ps5
 @user_router.callback_query(F.data == 'ps5')
 async def ps5(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
-    await callback.message.answer('Отличный выбор!',
-                         reply_markup=reply.oukey_kb.as_markup(
-                             resize_keyboard=True,
-                             input_field_placeholder='Подтвердите свой выбор'
-                         ))
+    await callback.message.answer('Отличный выбор! Со списком игр установленных на консоли можете ознакомиться по ссылке.  ',
+                        reply_markup=get_callback_btns(
+                                            btns={"Мне подходит": f'gotopupils',
+                                                  }))
+    await state.update_data(place="PS5")
+    await state.set_state(bron_choice.pupils)
+
+#ps4
+@user_router.callback_query(F.data == 'ps4')
+async def ps5(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.message.answer('Отличный выбор! Со списком игр установленных на консоли можете ознакомиться по ссылке. ',
+                        reply_markup=get_callback_btns(
+                                            btns={"Мне подходит": f'gotopupils',
+                                                  }))
+    await state.update_data(place="PS4")
+    await state.set_state(bron_choice.pupils)
+
+#vr
+@user_router.callback_query(F.data == 'vr')
+async def ps5(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    await callback.message.answer('Отличный выбор! Со списком игр установленных на консоли можете ознакомиться по ссылке. \n' 
+    'VR присутствует только на Минской,67\n' 
+    'Рекомендуемое воличество человек до 8', reply_markup=get_callback_btns(
+                                            btns={"Мне подходит": f'gotopupilsplus',
+                                                  }))
+    await state.update_data(place="VR")
+    await state.set_state(bron_choice.pupilsplus)
+
+#стол
+@user_router.callback_query(F.data == 'stol')
+async def stol(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer(' Отличный выбор!',
+                                  reply_markup=get_callback_btns(
+                                      btns={"Мне подходит": f'gotopupils'
+                                            }))
+    await state.update_data(place="Стол")
+    await state.set_state(bron_choice.pupils)  
+
+#pc
+@user_router.callback_query(F.data == 'pc')
+async def stol(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer('Отличный выбор!\n'
+                                  'Компьютеры присутствует только на Минской,67\n'
+                                  'Количество компьютеров: 4',
+                                  reply_markup=get_callback_btns(
+                                      btns={"Мне подходит": f'gotopupilsplus'
+
+                                            }))
+    await state.update_data(place="PC")
+    await state.set_state(bron_choice.pupilsplus)  
+
+
+
+@user_router.callback_query(F.data == "gotopupils")
+async def pupulsstart(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer('Сколько вас планируется человек?')
+    await callback.answer()
+
+
+@user_router.message(bron_choice.pupils, F.text)
+async def pupils(message: Message, state: FSMContext):
+    colvo = string_to_int(message.text)
+    if colvo == None:
+        await message.answer('Введите число')
+    elif colvo > 10:
+       await message.answer('Максимальное количество человек для мест в общем зале: 10.\n'
+                             'Введите количество меньше или забронируйте приватный зал', reply_markup=get_callback_btns(
+                                 btns={
+                                     "Перейти к выбору залов": f'privat'
+                                 }
+                             ))
+    else:
+        await state.update_data(pupils=message.text)
+        await state.set_state(bron_choice.minkoms)
+        await message.answer('Давайте продолжим', reply_markup=get_callback_btns(
+            btns={
+                "Перейи к выбору филиала": f'gotominkoms'
+            }
+        ))
+
+#для пк и vr
+@user_router.callback_query(F.data == "gotopupilsplus")
+async def pupulsplusstart(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer('Сколько вас планируется человек?')
+    await callback.answer()
+
+
+@user_router.message(bron_choice.pupilsplus, F.text)
+async def pupilsplus(message: Message, state: FSMContext):
+    colvo = string_to_int(message.text)
+    if colvo == None:
+        await message.answer('Введите число')
+    elif colvo > 10:
+        await message.answer('Максимальное количество человек для мест в общем зале:10.\n'
+                             'Введите количество меньше или забронируйте приватный зал', 
+                             reply_markup=get_callback_btns(
+                                 btns={
+                                     "Перейти к выбору залов": f'privat'
+                                 }
+                             ))
+    else:
+        await state.update_data(pupils=message.text)
+        await state.update_data(minkoms="Минская 67")
+        await message.answer('Давайте продолжим', reply_markup=get_callback_btns(
+            btns={
+                "Продолжить": f'gotoname'
+            }
+        ))
+        await state.set_state(bron_choice.name)
+
+
+#выбор филиала
+@user_router.callback_query(F.data == 'gotominkoms')
+async def filial(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer('Какой филиал для вас будет удобнее?',
+                                  reply_markup=get_callback_btns(
+                                      btns={"Минская, 67": f'min',
+                                            "Комсомольская, 8": f'koms'
+                                            }))
+
+@user_router.callback_query(F.data == 'min')
+async def min(callback: types.CallbackQuery, state: FSMContext):
+    await state.update_data(minkoms='Минская 67')
+    await callback.message.answer(f'Запомнил, вам удобнее Минская', reply_markup=get_callback_btns(
+        btns={
+            "Продолжить": f'gotoname'
+        }
+    ))
     await state.set_state(bron_choice.name)
 
+@user_router.callback_query(F.data == 'koms')
+async def min(callback: types.CallbackQuery, state: FSMContext):
+    await state.update_data(minkoms='Комсомольская 8')
+    await callback.message.answer(f'Запомнил, вам удобнее Комсомольская', reply_markup=get_callback_btns(
+        btns={
+            "Продолжить": f'gotoname'
+        }
+    ))
+    await state.set_state(bron_choice.name)
+    
+
+#переход на приватные залы
 @user_router.callback_query(F.data == 'privat')
 async def privat(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer('Сколько человек планируется?',
@@ -104,7 +269,7 @@ async def privat(callback: types.CallbackQuery, state: FSMContext):
                                             ))
 
 
-
+#фиолетовый
 @user_router.callback_query(F.data == 'fiol')
 async def fiol(callback: types.CallbackQuery, state: FSMContext):
     photof = FSInputFile('pictures/fiol.png')
@@ -115,7 +280,11 @@ async def fiol(callback: types.CallbackQuery, state: FSMContext):
                                             btns={"Мне подходит": f'gotoname',
                                                   }
                                         ))
+    await state.update_data(place="Фиолетовый зал")
+    await state.update_data(minkoms="Минская 67")
+    await state.set_state(bron_choice.name)
 
+#зеленый
 @user_router.callback_query(F.data == 'green')
 async def green(callback: types.CallbackQuery, state: FSMContext):
     photog = FSInputFile('pictures/green.jpg')
@@ -126,7 +295,11 @@ async def green(callback: types.CallbackQuery, state: FSMContext):
                                             btns={"Мне подходит": f'gotoname',
                                                   }
                                         ))
+    await state.update_data(place="Зеленый зал")
+    await state.update_data(minkoms='Комсомольская 8')
+    await state.set_state(bron_choice.name)
 
+#кирпичный
 @user_router.callback_query(F.data == 'redkoms')
 async def redkoms(callback: types.CallbackQuery, state: FSMContext):
     photork = FSInputFile('pictures/redkoms.jpg')
@@ -138,10 +311,11 @@ async def redkoms(callback: types.CallbackQuery, state: FSMContext):
                                                     }
                                         ))
 
-    await orm_bron(session, place="Кирпичный зал")
-    await state.set_state(name)
+    await state.update_data(place="Кирпичный зал")
+    await state.update_data(minkoms='Комсомольская 8')
+    await state.set_state(bron_choice.name)  
 
-
+#красный
 @user_router.callback_query(F.data == 'redmin')
 async def redmin(callback: types.CallbackQuery, state: FSMContext):
     photorm = FSInputFile('pictures/redmin.jpg')
@@ -152,126 +326,279 @@ async def redmin(callback: types.CallbackQuery, state: FSMContext):
                                             btns={"Мне подходит": f'gotoname',
                                                     }
                                         ))
+    await state.update_data(place="Красный зал")
+    await state.update_data(minkoms="Минская 67")
+    await state.set_state(bron_choice.name)  
 
-@user_router.callback_query(F.data == 'stol')
-async def stol(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer(' Отличный выбор!',
-                                  reply_markup=get_callback_btns(
-                                      btns={"Мне подходит": f'gotoname'
-                                            }))
-    await state.set_state(bron_choice.date)
 
+
+#просьба указать имя
 @user_router.callback_query(F.data == 'gotoname')
-async def name(callback: CallbackQuery, state: FSMContext):
+async def name(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer('Как к вам можно обращаться?')
     await state.set_state(bron_choice.name)
     await callback.answer()
 
+#приемка имени, просьба указания телефона
 @user_router.message(bron_choice.name, F.text)
 async def process_name(message: Message, state: FSMContext):
-    async with async_session() as session:
-        user = await session.get(User, message.from_user.id)
-        if not user:
-            user = User(user_id=message.from_user.id)
-            session.add(user)
-        
-        user.name = message.text
-        await session.commit()
+    await state.update_data(name=message.text)
     
-    await message.answer(f"Хорошо, {message.text}! В какой день вы хотите прийти? Укажите дату в формате ДД.ММ")
-    await state.set_state(bron_choice.date) 
+    await message.answer(
+    f"Хорошо, {message.text}! Для связи с вами в случае проблем с бронированием, "
+    "напишите свой номер телефона в формате +7XXXXXXXXXX или нажмите на кнопку",
+    reply_markup=get_keyboard("Отсправить номер", request_contact=1))
+    await state.set_state(bron_choice.phone_number) 
 
-@user_router.message(BronChoice.date, F.text)
-async def process_date(message: Message, state: FSMContext):
+
+#приемка телефона->дата
+@user_router.message(bron_choice.phone_number, F.text | F.contact)
+async def getnumber(message: Message, state: FSMContext):
+    if message.contact:
+        phone = message.contact.phone_number
+    elif message.text:
+        phone = message.text
+        if phone.startswith('8'):
+            phone = '+7' + phone[1:]
+        elif not phone.startswith('+7'):
+            phone = '+7' + phone
+        else:
+            phone = message.text
+    if validate_phone_number(phone):
+        await message.answer(
+            "Номер принят, осталось определиться с датой. "
+            "Укажите дату когда вы бы хотели прийти в формате ДД.ММ", reply_markup=ReplyKeyboardRemove()
+        )
+        await state.update_data(phone_number=phone)
+        await state.set_state(bron_choice.date)
+    else:
+        await message.answer(
+            "Неверный формат номера, попробуйте еще раз!\n"
+            "Пример правильного формата: +79123456789\n"
+            "Или используйте кнопку для отправки контакта 📱"
+        )
+
+
+
+
+#приемка даты->время
+@user_router.message(bron_choice.date, F.text)
+async def process_date(message: types.Message, state: FSMContext):
     try:
-        input_date = datetime.strptime(message.text, "%d.%m")
-        current_year = datetime.now().year
-        full_date = input_date.replace(year=current_year).date()
 
-        async with async_session() as session:
-            user = await session.get(User, message.from_user.id)
-            if user:
-                user.date = full_date
-                await session.commit()
-                await message.answer(
-                    f"Дата {full_date.strftime('%d.%m.%Y')} успешно сохранена!\n"
-                    f"Ваше имя: {user.name}\n"
-                    f"Ваша дата: {full_date.strftime('%d.%m.%Y')}"
-                )
-                await state.clear()
-            else:
-                await message.answer("Сначала нужно указать имя!")
-                await state.clear()
-
+        date_str = message.text  
+        input_date = datetime.strptime(date_str, "%d.%m").date()
+        await state.update_data(date=input_date)
+        await message.answer("🕒 Теперь введите время (формат ЧЧ:ММ):")
+        await state.set_state(bron_choice.time)
     except ValueError:
-        await message.answer("Неверный формат даты. Попробуйте еще раз в формате ДД.ММ (например 25.12)")
-    except Exception as e:
-        await message.answer("Произошла ошибка. Попробуйте еще раз.")
-        await state.clear()
-        print(f"Error: {e}")
+        await message.answer("❌ Неверный формат даты! Используйте ДД.ММ")
+
+
+
+
 
 @user_router.message(bron_choice.time, F.text)
-async def process_time(message: Message, state: FSMContext):
+async def process_time(message: types.Message, state: FSMContext):
     try:
+        # Парсим время и сохраняем как объект datetime.time
         input_time = datetime.strptime(message.text, "%H:%M").time()
-        async with async_session() as session:
-            user = await session.get(User, message.from_user.id)
-            if user:
-                user.time = input_time
-                await session.commit()
-                await message.answer(
-                    "Выберите способ ввода номера:",
-                    reply_markup=get_callback_btns(
-                        btns={
-                            "Отправить номер телефона": "sendnumber",
-                            "Ввести номер вручную": "typenumber"
-                        },
-                        sizes=(2,)
-                    )  
-                )  
-                
-                await state.set_state(bron_choice.phone_number)
-            else:
-                await message.answer("❌ Сначала укажите имя и дату!")
-                await state.clear()
-                
-    except ValueError:
-        await message.answer("⚠️ Неверный формат времени. Используйте ЧЧ:MM (например 14:30)")
-
-
-@user_router.callback_query(Text("sendnumber"))
-async def send_phone_handler(callback: CallbackQuery, state: FSMContext):
-    try:
-        async with async_session() as session:
-            user = await session.get(User, callback.from_user.id)
-            if user:
-                # Пытаемся получить номер из профиля Telegram
-                if callback.from_user.phone_number:
-                    user.phone_number = callback.from_user.phone_number
-                    await session.commit()
-                    await callback.message.edit_text(
-                        f"✅ Номер {callback.from_user.phone_number} успешно сохранен!\n"
-                        f"▫️ Имя: {user.name}\n"
-                        f"▫️ Дата: {user.date.strftime('%d.%m.%Y')}\n"
-                        f"▫️ Время: {user.time.strftime('%H:%M')}\n"
-                        f"▫️ Телефон: {callback.from_user.phone_number}"
-                    )
-                else:
-                    await callback.message.answer("❌ Номер не привязан к вашему аккаунту Telegram")
-                    await state.set_state(bron_choice.phone_number)
-            else:
-                await callback.message.answer("❌ Сначала заполните предыдущие данные!")
+        
+        if time(3, 0) <= input_time < time(12, 0):
+            await message.answer("⏰ Мы не работаем в это время!")
+            return
             
-            await state.clear()
-            await callback.answer()
+        await state.update_data(time=input_time)
+        await message.answer(
+            "✅ Время сохранено! Выберите продолжительность", 
+            reply_markup=get_callback_btns(
+                btns={
+                    "До 2 часов": f'upto2',
+                    "2-4 часа": f'upto4',
+                    "Более 4 часов(указать время)": f'more4'
+                }
+            )
+        )
 
+    except ValueError:
+        await message.answer("❌ Неверный формат! Используйте ЧЧ:ММ (например: 14:30)")
     except Exception as e:
-        print(f"Error: {e}")
-        await callback.message.answer("⚠️ Произошла ошибка при обработке номера")
+        print(f"Time processing error: {e}")
+        await message.answer("❌ Ошибка обработки времени")
+                        
+# Хендлер для 2 часов (исправленный)
+@user_router.callback_query(F.data == 'upto2')
+async def handle_upto2(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        data = await state.get_data()
+        
+        # Проверяем тип данных
+        if not isinstance(data.get('time'), time):
+            raise TypeError("Неверный тип данных времени")
+            
+        start_time = data['time']
+        
+        # Создаем полный объект datetime
+        end_datetime = datetime.combine(
+            date.today(),  # текущая дата
+            start_time     # объект времени
+        ) + timedelta(hours=2)
+        
+        # Извлекаем только время
+        end_time = end_datetime.time()
+        
+        if not (end_time >= time(12, 0) or end_time < time(3, 0)):
+            await callback.message.answer("❌ Время окончания вне рабочего периода!")
+            return
+            
+        await state.update_data(timeout=end_time)
+        await show_contact_choice(callback.message)
+        await state.set_state(bron_choice.contact_method)
+        await callback.answer()
 
-@user_router.callback_query(Text("typenumber"))
-async def type_phone_handler(callback: CallbackQuery, state: FSMContext):
-    await callback.message.answer("📱 Введите номер в формате +7XXXXXXXXXX:")
-    await state.set_state(bron_choice.phone_number)
-    await callback.answer()              
+    except KeyError:
+        await callback.message.answer("❌ Время бронирования не найдено!")
+    except TypeError as e:
+        print(f"Type error: {str(e)}")
+        await callback.message.answer("❌ Ошибка в данных времени")
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        await callback.message.answer("❌ Ошибка обработки запроса")
 
+# Хендлер для 4 часов
+@user_router.callback_query(F.data == 'upto4')
+async def handle_upto4(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        data = await state.get_data()
+        start_time = data['time']
+        
+        end_datetime = datetime.combine(
+            date.today(),
+            start_time
+        ) + timedelta(hours=4)
+        
+        end_time = end_datetime.time()
+        
+        if not is_valid_working_time(end_time):
+            await callback.message.answer("❌ Время окончания вне рабочих часов (12:00-03:00)!")
+            return
+            
+        await state.update_data(timeout=end_time)
+        await show_contact_choice(callback.message)
+        await state.set_state(bron_choice.contact_method)
+        await callback.answer()
+
+    except KeyError:
+        await callback.message.answer("❌ Ошибка: время бронирования не найдено!")
+        await callback.answer()
+    except Exception as e:
+        await callback.message.answer("❌ Ошибка обработки запроса")
+        print(f"Error in upto4: {str(e)}")
+        await callback.answer()
+
+# Хендлер для ручного ввода
+@user_router.callback_query(F.data == "more4")
+async def handle_more4(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        await callback.message.answer("⌛ Введите количество часов (от 5 до 8):")
+        await state.set_state(bron_choice.waiting_hours)
+        await callback.answer()
+    except Exception as e:
+        print(f"Error in more4: {str(e)}")
+        await callback.answer()
+
+# Хендлер для ручного ввода часов
+from datetime import datetime, date, time, timedelta
+
+@user_router.message(bron_choice.waiting_hours, F.text)
+async def process_custom_hours(message: types.Message, state: FSMContext):
+    try:
+
+        duration = int(message.text)
+        if not 5 <= duration <= 8:
+            raise ValueError("Допустимый диапазон: 5-8 часов")
+
+        data = await state.get_data()
+        start_time = data.get('time')
+        
+        if not isinstance(start_time, time):
+            raise TypeError(f"Ожидается объект time, получен {type(start_time)}")
+
+        start_datetime = datetime.combine(
+            date.today(),   
+            start_time       
+        )
+        end_datetime = start_datetime + timedelta(hours=duration)
+        end_time = end_datetime.time()
+
+
+        if not is_valid_working_time(end_time):
+            await message.answer("❌ Время окончания должно быть между 12:00 и 03:00!")
+            return
+
+        await state.update_data(timeout=end_time)
+        await show_contact_choice(message)
+        await state.set_state(bron_choice.contact_method)
+
+    except ValueError as ve:
+        await message.answer(f"❌ {str(ve)}")
+    except TypeError as te:
+        print(f"TypeError: {str(te)}")
+        await message.answer("❌ Ошибка формата времени! Начните бронирование заново.")
+        await state.clear()
+    except Exception as e:
+        await message.answer("❌ Критическая ошибка! Попробуйте позже.")
+        print(f"Unhandled error: {str(e)}")
+
+# Общий метод для показа выбора связи
+async def show_contact_choice(msg: types.Message):
+    await msg.answer(
+        "✅ Время подтверждено!\nВыберите способ связи:",
+        reply_markup=get_callback_btns(btns={
+            "📲 Telegram": "telegram",
+            "📞 Телефон": "phone"
+        })
+    )
+
+# Финализатор бронирования
+@user_router.callback_query(F.data.in_(["telegram", "phone"]), bron_choice.contact_method)
+async def finalize_booking(callback: types.CallbackQuery, state: FSMContext, session: AsyncSession):
+    try:
+        data = await state.get_data()
+        if not all([
+            isinstance(data['date'], date),
+            isinstance(data['time'], time),
+            isinstance(data['timeout'], time)
+        ]):
+            raise TypeError("Некорректные типы данных")
+        print(f"Date type: {type(data['date'])}")  
+        print(f"Time type: {type(data['time'])}")    
+        print(f"Timeout type: {type(data['timeout'])}")  
+        await orm_bron(
+            session=session,
+            time=data['time'],       
+            timeout=data['timeout'], 
+            date=data['date'],       
+            place=data['place'],
+            minkoms=data['minkoms'],
+            username=callback.from_user.username,
+            name=data['name'],
+            phone_number=data['phone_number'],
+            pupils=data['pupils'],
+            contact_method=callback.data
+        )
+        await callback.message.answer(
+            "✅ Бронь создана!\n"
+            f"· Дата: {data['date'].strftime('%d.%m.%Y')}\n"
+            f"· Время: {data['time'].strftime('%H:%M')}-{data['timeout'].strftime('%H:%M')}\n"
+            f"· Адрес: {data['minkoms']}\n"
+            f"· Место: {data['place']}\n"
+            f"· Гостей: {data['pupils']}\n"
+            f"· Связь: {'Telegram' if callback.data == 'telegram' else 'Телефон'}"
+        )
+    except TypeError as e:
+        print(f"Type Error: {e}")
+        await callback.message.answer("❌ Ошибка в данных бронирования")
+    except Exception as e:
+        print(f"DB Error: {repr(e)}")
+         
